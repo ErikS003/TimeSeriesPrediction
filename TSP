@@ -1,0 +1,69 @@
+import numpy as np
+import yfinance as yf
+import tensorflow as tf
+from sklearn.preprocessing import MinMaxScaler
+from tensorflow.keras.models import Sequential
+from tensorflow.keras.layers import LSTM, Dense, Dropout
+import os
+from tensorflow import keras
+from tensorflow.keras.layers import Conv1D, MaxPooling1D, Flatten
+
+# Step 1: Select a stock and gather data
+stock_symbol = 'AAPL'  #Stock of choice
+#Learning period, 
+start_date = '2015-01-01'#From
+end_date = '2023-07-11'#To
+
+data = yf.download(stock_symbol, start=start_date, end=end_date)['Close'].values.reshape(-1, 1)
+
+# Step 2: Data Preprocessing
+scaler = MinMaxScaler(feature_range=(0, 1))
+data_scaled = scaler.fit_transform(data)
+
+# Prepare data for LSTM (X: past prices, y: next day's price)
+X, y = [], []
+look_back = 10  # Number of previous days to use for prediction (can be adjusted)
+
+for i in range(len(data_scaled) - look_back):
+    X.append(data_scaled[i:i + look_back, 0])
+    y.append(data_scaled[i + look_back, 0])
+
+X, y = np.array(X), np.array(y)
+
+# Reshape the input data for LSTM [samples, time steps, features]
+X = X.reshape(X.shape[0], X.shape[1], 1)
+
+# Step 3: Define the LSTM Model
+
+
+model = Sequential()
+model.add(LSTM(64, input_shape=(X.shape[1], X.shape[2]), return_sequences=True))
+model.add(Dropout(0.2))
+model.add(LSTM(32))
+model.add(Dropout(0.2))
+model.add(Dense(1))
+model.compile(loss='mean_squared_error', optimizer='adam')
+
+# Step 4: Split data into training and validation sets
+train_size = int(0.8 * len(X))
+X_train, X_val = X[:train_size], X[train_size:]
+y_train, y_val = y[:train_size], y[train_size:]
+
+# Step 5: Train the Model with validation data
+model.fit(X_train, y_train, epochs=50, batch_size=16, validation_data=(X_val, y_val), verbose=1)
+
+# Step 6: Forecasting Future Prices
+# Use the last 'look_back' days as input for predicting the next day's price
+last_look_back_days = data_scaled[-look_back - 1: -1]  # Fix to get the current day's value
+forecast_input = last_look_back_days.reshape(1, look_back, 1)
+forecasted_price_scaled = model.predict(forecast_input)
+
+# Inverse transform to get the forecasted price in the original scale
+forecasted_price = scaler.inverse_transform(forecasted_price_scaled)[0][0]
+
+# Print the current value of the day entered (end date)
+current_value = data[-1][0]
+print(f"Current value for {end_date}: {current_value:.2f}")
+print(f"Forecasted price for the next day: {forecasted_price:.2f}")
+
+
