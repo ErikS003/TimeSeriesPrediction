@@ -4,66 +4,127 @@ import tensorflow as tf
 from sklearn.preprocessing import MinMaxScaler
 from tensorflow.keras.models import Sequential
 from tensorflow.keras.layers import LSTM, Dense, Dropout
-import os
-from tensorflow import keras
-from tensorflow.keras.layers import Conv1D, MaxPooling1D, Flatten
+from tensorflow.keras.callbacks import ReduceLROnPlateau, EarlyStopping, ModelCheckpoint
+from tensorflow.keras.optimizers import Adam
+import pandas as pd
+import matplotlib.pyplot as plt
 
 # Step 1: Select a stock and gather data
-stock_symbol = 'AAPL'  #Stock of choice
-#Learning period, 
-start_date = '2015-01-01'#From
-end_date = '2023-07-11'#To
-
-data = yf.download(stock_symbol, start=start_date, end=end_date)['Close'].values.reshape(-1, 1)
+def download_stock_data(stock_symbol, start_date, end_date):
+    data = yf.download(stock_symbol, start=start_date, end=end_date)['Close'].values.reshape(-1, 1)
+    return data
 
 # Step 2: Data Preprocessing
-scaler = MinMaxScaler(feature_range=(0, 1))
-data_scaled = scaler.fit_transform(data)
+def preprocess_data(data):
+    scaler = MinMaxScaler(feature_range=(0, 1))
+    data_scaled = scaler.fit_transform(data)
+    return scaler, data_scaled
 
-# Prepare data for LSTM (X: past prices, y: next day's price)
-X, y = [], []
-look_back = 10  # Number of previous days to use for prediction (can be adjusted)
+# Step 3: Prepare data for LSTM
+def prepare_lstm_data(data_scaled, look_back):
+    X, y = [], []
+    for i in range(len(data_scaled) - look_back):
+        X.append(data_scaled[i:i + look_back, 0])
+        y.append(data_scaled[i + look_back, 0])
+    X, y = np.array(X), np.array(y)
+    X = X.reshape(X.shape[0], X.shape[1], 1)
+    return X, y
 
-for i in range(len(data_scaled) - look_back):
-    X.append(data_scaled[i:i + look_back, 0])
-    y.append(data_scaled[i + look_back, 0])
+# Step 4: Define the LSTM Model
+def create_lstm_model(input_shape):
+    model = Sequential()
+    model.add(LSTM(512, input_shape=input_shape, activation='relu', return_sequences=True))
+    model.add(Dropout(0.2))
+    model.add(LSTM(256, activation='relu', return_sequences=True))
+    model.add(Dropout(0.2))
+    model.add(LSTM(128))
+    model.add(Dropout(0.2))
+    model.add(Dense(1))
+    return model
 
-X, y = np.array(X), np.array(y)
+# Step 5: Use optimizer and compile the model
+def compile_model(model):
+    optimizer = Adam(learning_rate=0.001)
+    model.compile(loss='mean_squared_error', optimizer=optimizer)
 
-# Reshape the input data for LSTM [samples, time steps, features]
-X = X.reshape(X.shape[0], X.shape[1], 1)
+# Step 6: Time-based Data Splitting
+def split_data(X, y, train_size):
+    X_train, X_val = X[:train_size], X[train_size:]
+    y_train, y_val = y[:train_size], y[train_size:]
+    return X_train, X_val, y_train, y_val
 
-# Step 3: Define the LSTM Model
+# Step 7: Model Training with Early Stopping and Learning Rate Scheduling
+def train_model(model, X_train, y_train, X_val, y_val):
+    reduce_lr = ReduceLROnPlateau(monitor='val_loss', factor=0.1, patience=5, min_lr=0.00001)
+    early_stop = EarlyStopping(monitor='val_loss', patience=10, restore_best_weights=True)
+    model_checkpoint = ModelCheckpoint('best_model.h5', monitor='val_loss', save_best_only=True)
 
+    history = model.fit(X_train, y_train, epochs=25, batch_size=4, validation_data=(X_val, y_val),
+                        callbacks=[reduce_lr, early_stop, model_checkpoint], verbose=1)
+    return history
 
-model = Sequential()
-model.add(LSTM(64, input_shape=(X.shape[1], X.shape[2]), return_sequences=True))
-model.add(Dropout(0.2))
-model.add(LSTM(32))
-model.add(Dropout(0.2))
-model.add(Dense(1))
-model.compile(loss='mean_squared_error', optimizer='adam')
+# Step 8: Forecasting Future Prices
+def forecast_prices(best_model, scaler, data_scaled, look_back):
+    last_look_back_days = data_scaled[-look_back:]
+    forecast_input = last_look_back_days.reshape(1, look_back, 1)
+    forecasted_price_scaled = best_model.predict(forecast_input)
+    forecasted_price = scaler.inverse_transform(forecasted_price_scaled)[0][0]
+    return forecasted_price
 
-# Step 4: Split data into training and validation sets
-train_size = int(0.8 * len(X))
-X_train, X_val = X[:train_size], X[train_size:]
-y_train, y_val = y[:train_size], y[train_size:]
+# Main function
+def main():
+    # Step 1: Select a stock and gather data
+    stock_symbol = 'BTC-USD'
+    start_date = '2010-01-01'
+    end_date = '2020-07-19'
+    data = download_stock_data(stock_symbol, start_date, end_date)
 
-# Step 5: Train the Model with validation data
-model.fit(X_train, y_train, epochs=50, batch_size=16, validation_data=(X_val, y_val), verbose=1)
+    # Step 2: Data Preprocessing
+    scaler, data_scaled = preprocess_data(data)
 
-# Step 6: Forecasting Future Prices
-# Use the last 'look_back' days as input for predicting the next day's price
-last_look_back_days = data_scaled[-look_back - 1: -1]  # Fix to get the current day's value
-forecast_input = last_look_back_days.reshape(1, look_back, 1)
-forecasted_price_scaled = model.predict(forecast_input)
+    # Step 3: Prepare data for LSTM
+    look_back = 3
+    X, y = prepare_lstm_data(data_scaled, look_back)
 
-# Inverse transform to get the forecasted price in the original scale
-forecasted_price = scaler.inverse_transform(forecasted_price_scaled)[0][0]
+    # Step 4: Define the LSTM Model
+    model = create_lstm_model(input_shape=(X.shape[1], X.shape[2]))
 
-# Print the current value of the day entered (end date)
-current_value = data[-1][0]
-print(f"Current value for {end_date}: {current_value:.2f}")
-print(f"Forecasted price for the next day: {forecasted_price:.2f}")
+    # Step 5: Use optimizer and compile the model
+    compile_model(model)
 
+    # Step 6: Time-based Data Splitting
+    train_size = int(0.8 * len(X))
+    X_train, X_val, y_train, y_val = split_data(X, y, train_size)
 
+    # Step 7: Model Training with Early Stopping and Learning Rate Scheduling
+    history = train_model(model, X_train, y_train, X_val, y_val)
+
+    # Load the best model for forecasting
+    best_model = tf.keras.models.load_model('best_model.h5')
+
+    # Step 8: Forecasting Future Prices
+    forecasted_price = forecast_prices(best_model, scaler, data_scaled, look_back)
+
+    # Print the current value of the day entered (end date)
+    current_value = data[-1][0]
+    print(f"Current value for {end_date}: {current_value:.2f}")
+    print(f"Forecasted price for the next day: {forecasted_price:.2f}")
+
+    # Step 9: Plot the Estimated Prices for each day in the validation set
+    forecasted_prices_scaled = best_model.predict(X_val)
+    forecasted_prices = scaler.inverse_transform(forecasted_prices_scaled).flatten()
+    actual_prices = scaler.inverse_transform(y_val.reshape(-1, 1)).flatten()
+    date_range_val = pd.date_range(start=end_date, periods=len(y_val) + 1)
+
+    plt.figure(figsize=(12, 6))
+    plt.plot(date_range_val[1:], actual_prices, label='Actual Prices', color='blue')
+    plt.plot(date_range_val[1:], forecasted_prices, label='Forecasted Prices', color='red')
+    plt.title('Actual vs. Forecasted Prices')
+    plt.xlabel('Date')
+    plt.ylabel('Stock Price')
+    plt.legend()
+    plt.grid(True)
+    plt.show()
+
+if __name__ == "__main__":
+    main()
