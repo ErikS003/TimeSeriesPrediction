@@ -1,0 +1,9 @@
+{
+    "stock_symbol": "BTC-USD",
+    "start_date": "2010-01-01",
+    "end_date": "2020-07-19",
+    "look_back": 5,
+    "epochs": 250,
+    "batch_size": 4,
+    "learning_rate": 0.001
+  }
